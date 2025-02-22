@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  pingpals-slave:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pingpals-slave
+    ports:
+      - "${PORT:-3001}:3001"
+    environment:
+      - PORT=${PORT:-3001}
+      - HOST=${HOST:-0.0.0.0}
+      - NODE_ENV=${NODE_ENV:-production}
+      - SLAVE_ID=${SLAVE_ID}
+      - SLAVE_NAME=${SLAVE_NAME}
+      - SLAVE_REGION=${SLAVE_REGION}
+      - MASTER_URL=${MASTER_URL}
+      - API_KEY=${API_KEY}
+      - MAX_CONCURRENT_CHECKS=${MAX_CONCURRENT_CHECKS:-50}
+      - CHECK_TIMEOUT=${CHECK_TIMEOUT:-30000}
+      - RETRY_ATTEMPTS=${RETRY_ATTEMPTS:-3}
+      - RETRY_DELAY=${RETRY_DELAY:-1000}
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-60}
+      - HEARTBEAT_INTERVAL=${HEARTBEAT_INTERVAL:-30}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${PORT:-3001}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
