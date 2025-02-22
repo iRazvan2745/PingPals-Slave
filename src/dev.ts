@@ -1,107 +1,43 @@
-import { spawn } from 'child_process';
-import fetch from 'node-fetch';
+import { UptimeSlave } from './index';
+import { SlaveConfig } from './types';
 
-const startProcess = (command: string, env: Record<string, string>) => {
-  const proc = spawn('bun', ['run', command], {
-    env: { ...process.env, ...env },
-    stdio: 'inherit',
-  });
+// Development environment configuration
+process.env.NODE_ENV = 'development';
+process.env.API_KEY = process.env.API_KEY || 'dev-key';
+process.env.PORT = process.env.PORT || '3001';
+process.env.HOST = process.env.HOST || '0.0.0.0';
+process.env.MASTER_URL = process.env.MASTER_URL || 'http://localhost:3000';
+process.env.SLAVE_ID = process.env.SLAVE_ID || `dev-slave-${process.env.PORT}`;
+process.env.SLAVE_NAME = process.env.SLAVE_NAME || `Development Slave (Port ${process.env.PORT})`;
 
-  proc.on('error', (error) => {
-    console.error(`Process ${command} failed to start:`, error);
-  });
+console.log('🚀 Starting slave...');
+console.log(`Slave ID: ${process.env.SLAVE_ID}`);
+console.log(`Slave Name: ${process.env.SLAVE_NAME}`);
+console.log(`Master URL: ${process.env.MASTER_URL}`);
+console.log(`Listening on: http://${process.env.HOST}:${process.env.PORT}`);
 
-  return proc;
+// Create slave configuration
+const config: SlaveConfig = {
+  id: process.env.SLAVE_ID!,
+  name: process.env.SLAVE_NAME,
+  port: parseInt(process.env.PORT || '3001'),
+  host: process.env.HOST || '0.0.0.0',
+  masterUrl: process.env.MASTER_URL!,
+  apiKey: process.env.API_KEY!,
+  maxConcurrentChecks: 50,
+  checkTimeout: 30000,
+  retryAttempts: 3,
+  services: []
 };
 
-const waitForPort = async (port: number, retries = 20, delay = 1000): Promise<boolean> => {
-  for (let i = 0; i < retries; i++) {
-    try {
-      console.log(`Attempt ${i + 1}/${retries} to connect to port ${port}...`);
-      const response = await fetch(`http://localhost:${port}/health`);
-      if (response.ok) {
-        return true;
-      }
-    } catch (e) {
-      console.log(`Master not ready yet, waiting ${delay}ms...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
-  return false;
-};
+// Start the slave
+const slave = new UptimeSlave(config);
 
-console.log('🚀 Starting development cluster...');
-
-// Generate a development API key
-const DEV_API_KEY = 'dev-' + Math.random().toString(36).slice(2);
-console.log('🔑 Using development API key:', DEV_API_KEY);
-
-// Start master
-const master = startProcess('src/master.ts', {
-  PORT: '3000',
-  HOST: 'localhost',
-  API_KEY: DEV_API_KEY,
-  NODE_ENV: 'development',
-  ALLOWED_ORIGINS: '*',
-  STATE_RETENTION_DAYS: '30',
-  DATA_DIR: './data',
-  SLAVE_HEARTBEAT_INTERVAL: '30'
-});
-
-// Start slaves after ensuring master is ready
-const startSlaves = async () => {
-  console.log('⏳ Waiting for master to start...');
-  const masterReady = await waitForPort(3000);
-  
-  if (!masterReady) {
-    console.error('❌ Master failed to start within timeout period');
-    cleanup();
-    process.exit(1);
-  }
-
-  console.log('✅ Master is ready, starting slaves...');
-
-  // Start slaves
-  const slave1 = startProcess('src/slave.ts', {
-    PORT: '3001',
-    HOST: 'localhost',
-    SLAVE_ID: 'slave1',
-    SLAVE_NAME: 'Local Dev Slave 1',
-    MASTER_URL: 'http://localhost:3000',
-    API_KEY: DEV_API_KEY,
-    NODE_ENV: 'development',
-    MAX_CONCURRENT_CHECKS: '50',
-    CHECK_TIMEOUT: '30000',
-    RETRY_ATTEMPTS: '3'
-  });
-
-  const slave2 = startProcess('src/slave.ts', {
-    PORT: '3002',
-    HOST: 'localhost',
-    SLAVE_ID: 'slave2',
-    SLAVE_NAME: 'Local Dev Slave 2',
-    MASTER_URL: 'http://localhost:3000',
-    API_KEY: DEV_API_KEY,
-    NODE_ENV: 'development',
-    MAX_CONCURRENT_CHECKS: '50',
-    CHECK_TIMEOUT: '30000',
-    RETRY_ATTEMPTS: '3'
-  });
-
-  processes.push(slave1, slave2);
-};
-
-const processes = [master];
-
+// Handle graceful shutdown
 const cleanup = () => {
-  console.log('\n🛑 Shutting down development cluster...');
-  for (const proc of processes) {
-    proc.kill();
-  }
+  console.log('\n👋 Shutting down slave...');
   process.exit(0);
 };
 
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
-
-startSlaves();

@@ -7,7 +7,7 @@ import { SlaveConfig, MonitoringResult, ServiceConfig } from './types';
 import { Logger } from './utils/logger';
 import cron from 'node-cron';
 
-class UptimeSlave {
+export class UptimeSlave {
   private monitor: UptimeMonitor;
   private config: SlaveConfig;
   private app: Elysia;
@@ -78,10 +78,29 @@ class UptimeSlave {
   }
 
   async start(port: number) {
-    // Initialize services
-    this.log(`🔄 Initializing ${this.config.services.length} services...`);
-    for (const service of this.config.services) {
-      await this.addService(service);
+    // Initialize services by fetching from master
+    this.log(`🔄 Fetching services from master...`);
+    try {
+      const response = await fetch(`${this.config.masterUrl}/services`, {
+        headers: {
+          'Authorization': `Bearer ${this.config.apiKey}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch services: ${response.statusText}`);
+      }
+
+      const services = await response.json();
+      for (const service of services) {
+        if (service.assignedSlaves.includes(this.config.id)) {
+          await this.addService(service);
+        }
+      }
+      this.log(`✅ Initialized ${this.monitor.getServices().length} services`);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logError(`Failed to initialize services: ${errorMessage}`);
     }
 
     // Start the server
@@ -103,8 +122,11 @@ class UptimeSlave {
     // Add to monitor
     this.monitor.addService(service);
 
-    // Create monitoring task
-    const task = cron.schedule(`*/${service.interval} * * * * *`, async () => {
+    // Convert milliseconds to seconds for cron, ensuring minimum 1 second
+    const intervalSeconds = Math.max(1, Math.floor(service.interval / 1000));
+    
+    // Create monitoring task using proper interval in seconds
+    const task = cron.schedule(`*/${intervalSeconds} * * * * *`, async () => {
       try {
         const result = await this.monitor.checkService(service);
         await this.sendReport(result);
@@ -115,8 +137,13 @@ class UptimeSlave {
     });
 
     // Start monitoring immediately
-    const initialResult = await this.monitor.checkService(service);
-    await this.sendReport(initialResult);
+    try {
+      const initialResult = await this.monitor.checkService(service);
+      await this.sendReport(initialResult);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.logError(`Error in initial check for ${service.name}: ${errorMessage}`);
+    }
 
     this.tasks.set(service.id, task);
     return { status: 'ok', message: `Service ${service.name} added and monitoring started` };

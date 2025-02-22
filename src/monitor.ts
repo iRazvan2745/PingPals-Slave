@@ -35,25 +35,93 @@ export class UptimeMonitor {
   }
 
   private async checkHttpService(service: ServiceConfig): Promise<MonitoringResult> {
+    if (service.type !== 'http') {
+      throw new Error('Invalid service type: expected HTTP service');
+    }
+
     const startTime = Date.now();
     let error: string | null = null;
     let success = false;
+    let duration = 0;
 
     for (let attempt = 1; attempt <= this.config.retryAttempts; attempt++) {
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), service.timeout || this.config.timeout);
+        const timeoutId = setTimeout(() => {
+          controller.abort();
+        }, service.timeout || this.config.timeout);
 
-        const response = await fetch(service.type === 'http' ? service.url : '', {
-          signal: controller.signal
+        const fetchStartTime = Date.now();
+        
+        const response = await fetch(service.url, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'PingPals-Monitor/1.0',
+            'Accept': 'application/json'
+          }
         });
 
-        clearTimeout(timeout);
-        success = response.ok;
-        error = success ? null : `HTTP ${response.status}: ${response.statusText}`;
+        clearTimeout(timeoutId);
+        duration = Date.now() - fetchStartTime;
+
+        if (response.status === 200) {
+          try {
+            const data = await response.json();
+            
+            // Validate that the response is an array of service statuses
+            if (Array.isArray(data)) {
+              const isValid = data.every(item => 
+                typeof item === 'object' &&
+                typeof item.id === 'string' &&
+                typeof item.name === 'string' &&
+                typeof item.type === 'string' &&
+                (item.type === 'http' || item.type === 'icmp') &&
+                typeof item.interval === 'number' &&
+                typeof item.timeout === 'number' &&
+                typeof item.lastStatus === 'boolean' &&
+                Array.isArray(item.assignedSlaves)
+              );
+              
+              if (isValid) {
+                success = true;
+                error = null;
+              } else {
+                success = false;
+                error = 'Invalid response data format';
+              }
+            } else {
+              success = false;
+              error = 'Response is not an array of services';
+            }
+          } catch (parseError) {
+            success = false;
+            error = 'Invalid JSON response';
+          }
+        } else {
+          success = false;
+          error = `HTTP ${response.status}: ${response.statusText}`;
+        }
         break;
       } catch (err) {
-        error = err instanceof Error ? err.message : String(err);
+        duration = Date.now() - startTime;
+        const isTimeout = err instanceof Error && (
+          err.name === 'AbortError' || 
+          err.message.includes('timeout') || 
+          err.message.includes('abort')
+        );
+        
+        const isTlsError = err instanceof Error && (
+          err.message.includes('TLS') || 
+          err.message.includes('SSL') ||
+          err.message.includes('CERT')
+        );
+
+        error = isTimeout 
+          ? 'Request timed out'
+          : isTlsError
+          ? 'TLS connection failed'
+          : (err instanceof Error ? err.message : String(err));
+
         if (attempt === this.config.retryAttempts) {
           break;
         }
@@ -61,15 +129,12 @@ export class UptimeMonitor {
       }
     }
 
-    const endTime = Date.now();
-    const duration = endTime - startTime;
-
     return {
       serviceId: service.id,
       timestamp: Date.now(),
       success,
       duration,
-      error
+      error: error || 'Unknown error'
     };
   }
 
@@ -87,7 +152,14 @@ export class UptimeMonitor {
         });
 
         success = result.alive;
-        error = success ? null : 'Host is not responding to ICMP';
+        error = success ? null : (result.error || 'Host is not responding to ICMP');
+        
+        // If we get a permission error, log it clearly
+        if (error?.toLowerCase().includes('permission denied')) {
+          this.logger.error('Permission denied when running ping command. Please ensure sudo privileges are configured.');
+          error = 'Permission denied for ICMP check. Configure sudo privileges.';
+        }
+        
         break;
       } catch (err) {
         error = err instanceof Error ? err.message : String(err);
